@@ -1,0 +1,13 @@
+지금까지 만든 자동 제어 API는 직접 호출해야 작동
+기존 sensorController.js의 saveSensorData 함수에서 센서 데이터 저장이 성공한 직후 다음 코드 추가
+
+const controlService = require('../services/controlService');
+
+// 센서 데이터 저장 성공 후 자동 제어 실행
+controlService.runAutomaticControl(Number(greenhouse_id))
+    .then(result => {
+        console.log('자동 제어 결과:', result);
+    })
+    .catch(error => {
+        console.error('자동 제어 실행 오류:', error);
+    });
