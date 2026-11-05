@@ -1,0 +1,186 @@
+controllers/controlController.js 파일 생성
+
+const db = require('../config/db');
+
+const controlService = require('../services/controlService');
+
+
+// 자동 제어 실행
+exports.autoControl = async (req, res) => {
+    try {
+        const greenhouseId = Number(req.params.greenhouse_id);
+
+        if (!Number.isInteger(greenhouseId) || greenhouseId <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: '올바르지 않은 온실 ID입니다.'
+            });
+        }
+
+        const result =
+            await controlService.runAutomaticControl(greenhouseId);
+
+        res.json(result);
+
+    } catch (error) {
+        console.error('자동 제어 오류:', error);
+
+        res.status(500).json({
+            success: false,
+            message: '자동 제어 실행에 실패했습니다.'
+        });
+    }
+};
+
+
+// 수동 제어 실행
+exports.manualControl = async (req, res) => {
+    try {
+        const greenhouseId = Number(req.params.greenhouse_id);
+        const { device_type, action } = req.body;
+
+        if (!Number.isInteger(greenhouseId) || greenhouseId <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: '올바르지 않은 온실 ID입니다.'
+            });
+        }
+
+        if (
+            !['VENTILATION', 'IRRIGATION'].includes(device_type) ||
+            !['ON', 'OFF'].includes(action)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: '올바르지 않은 제어 요청입니다.'
+            });
+        }
+
+        // 장치 모드 확인
+        const [devices] = await db.execute(
+            `SELECT control_mode
+             FROM device_status
+             WHERE greenhouse_id = ?
+             AND device_type = ?`,
+            [greenhouseId, device_type]
+        );
+
+        if (devices.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: '등록되지 않은 장치입니다.'
+            });
+        }
+
+        if (devices[0].control_mode !== 'MANUAL') {
+            return res.status(409).json({
+                success: false,
+                message: '수동 모드로 변경한 후 제어할 수 있습니다.'
+            });
+        }
+
+        const result = await controlService.executeControl(
+            greenhouseId,
+            device_type,
+            action,
+            'MANUAL'
+        );
+
+        res.json(result);
+
+    } catch (error) {
+        console.error('수동 제어 오류:', error);
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+
+// 자동 / 수동 모드 변경
+exports.changeControlMode = async (req, res) => {
+    try {
+        const greenhouseId = Number(req.params.greenhouse_id);
+        const { device_type, control_mode } = req.body;
+
+        if (!Number.isInteger(greenhouseId) || greenhouseId <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: '올바르지 않은 온실 ID입니다.'
+            });
+        }
+
+        if (
+            !['VENTILATION', 'IRRIGATION'].includes(device_type) ||
+            !['AUTO', 'MANUAL'].includes(control_mode)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: '올바르지 않은 모드 설정입니다.'
+            });
+        }
+
+        const [result] = await db.execute(
+            `UPDATE device_status
+             SET control_mode = ?
+             WHERE greenhouse_id = ?
+             AND device_type = ?`,
+            [
+                control_mode,
+                greenhouseId,
+                device_type
+            ]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({
+                success: false,
+                message: '등록된 장치가 없습니다.'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: `${device_type} 장치가 ${control_mode} 모드로 변경되었습니다.`
+        });
+
+    } catch (error) {
+        console.error('제어 모드 변경 오류:', error);
+
+        res.status(500).json({
+            success: false,
+            message: '제어 모드 변경에 실패했습니다.'
+        });
+    }
+};
+
+
+// 장치 상태 조회
+exports.getDeviceStatus = async (req, res) => {
+    try {
+        const greenhouseId = Number(req.params.greenhouse_id);
+
+        const [rows] = await db.execute(
+            `SELECT *
+             FROM device_status
+             WHERE greenhouse_id = ?
+             ORDER BY device_id`,
+            [greenhouseId]
+        );
+
+        res.json({
+            success: true,
+            devices: rows
+        });
+
+    } catch (error) {
+        console.error('장치 상태 조회 오류:', error);
+
+        res.status(500).json({
+            success: false,
+            message: '장치 상태를 불러오지 못했습니다.'
+        });
+    }
+};
