@@ -1,0 +1,33 @@
+routes/control.js 파일 생성
+
+const express = require('express');
+const router = express.Router();
+
+const controlController =
+    require('../controllers/controlController');
+
+// 장치 상태 조회
+router.get(
+    '/status/:greenhouse_id',
+    controlController.getDeviceStatus
+);
+
+// 자동 제어 실행
+router.post(
+    '/auto/:greenhouse_id',
+    controlController.autoControl
+);
+
+// 수동 제어
+router.post(
+    '/manual/:greenhouse_id',
+    controlController.manualControl
+);
+
+// 자동 / 수동 모드 변경
+router.patch(
+    '/mode/:greenhouse_id',
+    controlController.changeControlMode
+);
+
+module.exports = router;
