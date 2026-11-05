@@ -1,0 +1,20 @@
+1. 구현 범위
+환기 장치 : 온도 기준 자동 제어
+관수 장치 : 토양 수분 기준 자동 제어
+수동 제어 : 관리자가 직접 ON/OFF
+자동 제어 : 센서 데이터에 따라 ON/OFF
+제어 기록 : 실행 명령과 결과 DB 저장
+안전 기능 : 센서 오류, 장치 오류 시 자동 제어 제한
+
+2. 프로젝트 폴더 구조
+smartfarm/
+├── config/
+│   └── db.js
+├── controllers/
+│   └── controlController.js
+├── routes/
+│   └── control.js
+├── services/
+│   └── controlService.js
+├── server.js
+└── .env
