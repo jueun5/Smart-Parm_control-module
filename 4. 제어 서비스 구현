@@ -1,0 +1,412 @@
+services/controlService.js 파일 생성
+
+파일이 담당하는 역할
+1. 최신 센서 데이터 조회
+2. 자동 제어 설정 조회
+3. 현재 장치의 제어 모드 확인
+4. 장치 ON/OFF 여부 결정
+5. 제어 명령 전달
+6. 제어 결과 DB 저장
+
+실제 장치 연결 전에도 테스트할 수 있도록 SIMULATION_MODE 지원
+
+4-1. 환경변수 설정
+.env에 다음 항목 추가
+
+# 제어 장치 테스트 모드
+SIMULATION_MODE=true
+
+# ESP32 주소 (실제 연동 시 설정)
+ESP32_URL=http://192.168.0.50
+
+# 장치 인증 토큰 (실제 연동 시 설정)
+ESP32_TOKEN=change_this_to_a_long_random_token
+
+
+
+SIMULATION_MODE=true이면 실제 장치에 명령을 보내지 않고 서버에서 가상으로 작동 결과를 기록
+
+4-2. controlService.js
+const db = require('../config/db');
+
+const SIMULATION_MODE =
+    process.env.SIMULATION_MODE === 'true';
+
+// 장치에 명령 전달
+async function sendDeviceCommand(deviceType, action) {
+
+    // 테스트 모드
+    if (SIMULATION_MODE) {
+        console.log(
+            `[시뮬레이션] ${deviceType} 장치 ${action}`
+        );
+
+        return {
+            success: true,
+            message: '시뮬레이션 명령 실행 완료'
+        };
+    }
+
+    // 실제 ESP32 연동 모드
+    const response = await fetch(
+        `${process.env.ESP32_URL}/control`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization':
+                    `Bearer ${process.env.ESP32_TOKEN}`
+            },
+            body: JSON.stringify({
+                device_type: deviceType,
+                action: action
+            }),
+            signal: AbortSignal.timeout(5000)
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error('제어 장치 응답 오류');
+    }
+
+    const result = await response.json();
+
+    if (!result.success) {
+        throw new Error('장치 제어에 실패했습니다.');
+    }
+
+    return result;
+}
+
+
+// 제어 기록 저장
+async function saveControlLog(
+    greenhouseId,
+    deviceType,
+    action,
+    status,
+    message
+) {
+    await db.execute(
+        `INSERT INTO control_logs (
+            greenhouse_id,
+            device_type,
+            command,
+            execution_status,
+            requested_at,
+            executed_at,
+            completed_at,
+            result
+        )
+        VALUES (?, ?, ?, ?, NOW(), NOW(), NOW(), ?)`,
+        [
+            greenhouseId,
+            deviceType,
+            action,
+            status,
+            message
+        ]
+    );
+}
+
+
+// 장치 상태 변경
+async function updateDeviceStatus(
+    greenhouseId,
+    deviceType,
+    action
+) {
+    await db.execute(
+        `UPDATE device_status
+         SET is_on = ?,
+             updated_at = NOW()
+         WHERE greenhouse_id = ?
+         AND device_type = ?`,
+        [
+            action === 'ON' ? 1 : 0,
+            greenhouseId,
+            deviceType
+        ]
+    );
+}
+
+
+// 장치 제어 실행
+async function executeControl(
+    greenhouseId,
+    deviceType,
+    action,
+    mode = 'AUTO'
+) {
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        // 장치 상태 조회 및 잠금
+        const [devices] = await connection.execute(
+            `SELECT *
+             FROM device_status
+             WHERE greenhouse_id = ?
+             AND device_type = ?
+             FOR UPDATE`,
+            [greenhouseId, deviceType]
+        );
+
+        if (devices.length === 0) {
+            throw new Error('등록되지 않은 장치입니다.');
+        }
+
+        const device = devices[0];
+
+        // 자동 모드에서 수동 제어 장치는 변경하지 않음
+        if (mode === 'AUTO' && device.control_mode !== 'AUTO') {
+            await connection.rollback();
+
+            return {
+                success: false,
+                skipped: true,
+                message: '수동 모드이므로 자동 제어를 건너뜁니다.'
+            };
+        }
+
+        // 이미 원하는 상태라면 명령 생략
+        const desiredState = action === 'ON' ? 1 : 0;
+
+        if (Number(device.is_on) === desiredState) {
+            await connection.rollback();
+
+            return {
+                success: true,
+                skipped: true,
+                message: '이미 해당 상태입니다.'
+            };
+        }
+
+        // DB 잠금 상태에서 트랜잭션 종료
+        await connection.commit();
+
+        // 장치에 명령 전달
+        const result = await sendDeviceCommand(
+            deviceType,
+            action
+        );
+
+        // 장치 명령이 성공한 경우에만 상태 변경
+        await connection.beginTransaction();
+
+        await connection.execute(
+            `UPDATE device_status
+             SET is_on = ?,
+                 updated_at = NOW()
+             WHERE greenhouse_id = ?
+             AND device_type = ?`,
+            [
+                desiredState,
+                greenhouseId,
+                deviceType
+            ]
+        );
+
+        await connection.commit();
+
+        await saveControlLog(
+            greenhouseId,
+            deviceType,
+            action,
+            'SUCCESS',
+            result.message
+        );
+
+        return {
+            success: true,
+            device_type: deviceType,
+            action: action,
+            message: result.message
+        };
+
+    } catch (error) {
+        try {
+            await connection.rollback();
+        } catch (_) {}
+
+        await saveControlLog(
+            greenhouseId,
+            deviceType,
+            action,
+            'FAILED',
+            error.message
+        ).catch(logError => {
+            console.error('제어 실패 기록 저장 오류:', logError);
+        });
+
+        throw error;
+
+    } finally {
+        connection.release();
+    }
+}
+
+
+// 센서값을 기준으로 자동 제어
+async function runAutomaticControl(greenhouseId) {
+
+    // 최신 센서 데이터
+    const [sensorRows] = await db.execute(
+        `SELECT *
+         FROM sensor_data
+         WHERE greenhouse_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [greenhouseId]
+    );
+
+    if (sensorRows.length === 0) {
+        return {
+            success: false,
+            message: '센서 데이터가 없습니다.'
+        };
+    }
+
+    const sensor = sensorRows[0];
+
+    // 오래된 센서 데이터로 장치를 제어하지 않도록 검사
+    const sensorTime = new Date(sensor.created_at).getTime();
+    const age = Date.now() - sensorTime;
+
+    if (
+        !Number.isFinite(sensorTime) ||
+        age < 0 ||
+        age > 60000
+    ) {
+        return {
+            success: false,
+            message: '센서 데이터가 오래되어 자동 제어를 중단했습니다.'
+        };
+    }
+
+    // 필수 센서값 검사
+    if (
+        sensor.temperature == null ||
+        sensor.soil_moisture == null ||
+        !Number.isFinite(Number(sensor.temperature)) ||
+        !Number.isFinite(Number(sensor.soil_moisture))
+    ) {
+        return {
+            success: false,
+            message: '센서값이 올바르지 않습니다.'
+        };
+    }
+
+    const temperature = Number(sensor.temperature);
+    const soilMoisture = Number(sensor.soil_moisture);
+
+    // 설정된 자동 제어 규칙 조회
+    const [rules] = await db.execute(
+        `SELECT *
+         FROM control_rules
+         WHERE greenhouse_id = ?
+         AND is_enabled = 1`,
+        [greenhouseId]
+    );
+
+    const results = [];
+
+    for (const rule of rules) {
+
+        let sensorValue;
+
+        if (rule.sensor_metric === 'temperature') {
+            sensorValue = temperature;
+        } else if (rule.sensor_metric === 'soil_moisture') {
+            sensorValue = soilMoisture;
+        } else {
+            continue;
+        }
+
+        const threshold = Number(rule.threshold_value);
+
+        if (!Number.isFinite(threshold)) {
+            continue;
+        }
+
+        let condition = false;
+
+        switch (rule.comparison_operator) {
+            case '>':
+                condition = sensorValue > threshold;
+                break;
+
+            case '>=':
+                condition = sensorValue >= threshold;
+                break;
+
+            case '<':
+                condition = sensorValue < threshold;
+                break;
+
+            case '<=':
+                condition = sensorValue <= threshold;
+                break;
+
+            case '=':
+                condition = sensorValue === threshold;
+                break;
+
+            default:
+                continue;
+        }
+
+        if (!condition) {
+            continue;
+        }
+
+        let action;
+
+        try {
+            const params =
+                typeof rule.action_params === 'string'
+                    ? JSON.parse(rule.action_params)
+                    : rule.action_params;
+
+            action = params.action;
+
+        } catch (error) {
+            console.error('제어 설정 JSON 오류:', error);
+            continue;
+        }
+
+        if (!['ON', 'OFF'].includes(action)) {
+            continue;
+        }
+
+        try {
+            const result = await executeControl(
+                greenhouseId,
+                rule.device_type,
+                action,
+                'AUTO'
+            );
+
+            results.push(result);
+
+        } catch (error) {
+            results.push({
+                success: false,
+                device_type: rule.device_type,
+                message: error.message
+            });
+        }
+    }
+
+    return {
+        success: true,
+        results
+    };
+}
+
+
+module.exports = {
+    executeControl,
+    runAutomaticControl
+};
