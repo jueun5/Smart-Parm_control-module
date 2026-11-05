@@ -1,0 +1,12 @@
+온실 ID가 1이라고 가정하고 장치 정보를 등록
+
+INSERT INTO device_status (
+    greenhouse_id,
+    device_type,
+    device_name,
+    is_on,
+    control_mode
+)
+VALUES
+(1, 'VENTILATION', '온실 환풍기', FALSE, 'AUTO'),
+(1, 'IRRIGATION', '관수 펌프', FALSE, 'AUTO');
