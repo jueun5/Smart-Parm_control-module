@@ -1,0 +1,92 @@
+기존에 설계했던 control_rules, control_logs 테이블 사용
+장치의 현재 상태와 자동 제어 설정을 관리하기 위해 device_status 테이블 추가
+
+3-1. 장치 상태 테이블
+
+CREATE TABLE device_status (
+    device_id INT AUTO_INCREMENT PRIMARY KEY,
+
+    greenhouse_id INT NOT NULL,
+
+    device_type VARCHAR(30) NOT NULL,
+
+    device_name VARCHAR(100),
+
+    is_on BOOLEAN NOT NULL DEFAULT FALSE,
+
+    control_mode VARCHAR(20)
+        NOT NULL DEFAULT 'AUTO',
+
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY unique_device (
+        greenhouse_id,
+        device_type
+    ),
+
+    FOREIGN KEY (greenhouse_id)
+        REFERENCES greenhouses(greenhouse_id)
+);
+
+device_type은 다음과 같이 구분
+- VENTILATION: 환기 장치
+- IRRIGATION: 관수 장치
+control_mode는 두 가지
+- AUTO: 자동 제어
+- MANUAL: 수동 제어
+
+3-2. 자동 제어 설정 데이터 추가
+기존 control_rules 테이블의 컬럼이 앞서 설계한 내용과 동일하다는 전제로 작성
+
+INSERT INTO control_rules (
+    greenhouse_id,
+    rule_name,
+    sensor_metric,
+    comparison_operator,
+    threshold_value,
+    device_type,
+    action_params,
+    is_enabled
+)
+VALUES
+(
+    1,
+    '고온 환기 제어',
+    'temperature',
+    '>=',
+    30,
+    'VENTILATION',
+    '{"action":"ON"}',
+    TRUE
+),
+(
+    1,
+    '온도 하강 환기 종료',
+    'temperature',
+    '<=',
+    26,
+    'VENTILATION',
+    '{"action":"OFF"}',
+    TRUE
+),
+(
+    1,
+    '토양 수분 부족 관수',
+    'soil_moisture',
+    '<=',
+    35,
+    'IRRIGATION',
+    '{"action":"ON"}',
+    TRUE
+),
+(
+    1,
+    '토양 수분 충분 관수 종료',
+    'soil_moisture',
+    '>=',
+    50,
+    'IRRIGATION',
+    '{"action":"OFF"}',
+    TRUE
+);
